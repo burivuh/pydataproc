@@ -2,6 +2,7 @@
 
 from functools import partial
 import struct
+import sys
 
 
 class PackedNamedTuple(object):
@@ -44,7 +45,9 @@ class PackedNamedTuple(object):
         cls.fields_in_order = fields
 
         if cls._unsupported_format_chars.intersection(format):
-            raise ValueError('Unsupported chars in the format string')
+            raise ValueError('These format chars: {} are not supported'.format(
+                cls._unsupported_format_chars
+            ))
 
         cls.unpackers = [
             partial(
@@ -110,22 +113,18 @@ class PackedNamedTuple(object):
         return (
             _pickle_restore,
             (
-                self.__class__.__name__, None, self.packed_array
+                self.__class__, self.packed_array
             )
         )
 
 
-def _pickle_restore(name, fields, value):
-    cls = _TYPE_BY_NAME_REGISTRY[name]
+def _pickle_restore(cls, value):
     instance = cls.__new__(cls)
     instance.packed_array = value
     return instance
 
 
-_TYPE_BY_NAME_REGISTRY = {}
-
-
-def create_namedtuple(name, format, fields, register_type=None):
+def packedtuple(name, format, fields, register_type=None):
     """
     Namedtuple-like factory function for a class creation.
 
@@ -135,17 +134,25 @@ def create_namedtuple(name, format, fields, register_type=None):
 
     t.setup(format, fields)
 
-    def serialize(obj):
-        return obj.packed_array
-
-    def deserialize(binary_record):
-        instance = t.__new__(t)
-        instance.packed_array = binary_record
-        return instance
+    # Used from a namedtuple code
+    # For pickling to work, the __module__ variable needs to be set to the
+    # frame where the named tuple is created.  Bypass this step in enviroments
+    # where sys._getframe is not defined (Jython for example) or sys._getframe
+    # is not defined for arguments greater than 0 (IronPython).
+    try:
+        t.__module__ = sys._getframe(1).f_globals.get('__name__', '__main__')
+    except (AttributeError, ValueError):
+        pass
 
     if register_type:
-        register_type(t, serialize, deserialize)
+        def serialize(obj):
+            return obj.packed_array
 
-    _TYPE_BY_NAME_REGISTRY[name] = t
+        def deserialize(binary_record):
+            instance = t.__new__(t)
+            instance.packed_array = binary_record
+            return instance
+
+        register_type(t, serialize, deserialize)
 
     return t

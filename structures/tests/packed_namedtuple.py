@@ -14,7 +14,7 @@ import sys
 import timeit
 import unittest
 
-from structures.packed_namedtuple import create_namedtuple
+from structures.packed_namedtuple import packedtuple
 
 
 class BaseTest(unittest.TestCase):
@@ -56,7 +56,7 @@ class BaseTest(unittest.TestCase):
 
     def _create_tested_types(self):
         return tuple(
-            create_namedtuple(
+            packedtuple(
                 'PackedType%d' % i, obj['format'], sorted(obj['fields'].keys())
             )
             for i, obj in enumerate(self.test_objects)
@@ -80,6 +80,9 @@ class BaseTest(unittest.TestCase):
         self.named_tuples = self._create_common_types()
         # register types for pickle to find
         for cls in self.named_tuples:
+            globals()[cls.__name__] = cls
+
+        for cls in self.packed_types:
             globals()[cls.__name__] = cls
 
     def info(self, message):
@@ -223,7 +226,7 @@ class CreationSpeedTest(BasePostInstanceTest):
                 tested_time, common_time
             )
         )
-        self.assertLess(tested_time / common_time, 2)
+        self.assertLess(tested_time / common_time, 1.95)
 
     def test_indexed_creation(self):
         """Compare namedtuple and packedtuple instance creation by args."""
@@ -238,7 +241,7 @@ class CreationSpeedTest(BasePostInstanceTest):
                 tested_time, common_time
             )
         )
-        self.assertLess(tested_time / common_time, 1.25)
+        self.assertLess(tested_time / common_time, 1.15)
 
 
 class SerializationSpeedTest(BasePostInstanceTest):
@@ -270,7 +273,7 @@ class SerializationSpeedTest(BasePostInstanceTest):
                 tested_time, common_time
             )
         )
-        self.assertLess(tested_time / common_time, 0.6)
+        self.assertLess(tested_time / common_time, 0.7)
 
     def test_deserialization(self):
         """Compare namedtuple and packedtuple deserialization speed."""
@@ -296,7 +299,7 @@ class SerializationSpeedTest(BasePostInstanceTest):
                 tested_time, common_time
             )
         )
-        self.assertLess(tested_time / common_time, 0.2)
+        self.assertLess(tested_time / common_time, 0.11)
 
 
 class AccessSpeedTest(BasePostInstanceTest):
