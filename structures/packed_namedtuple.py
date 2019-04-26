@@ -46,7 +46,7 @@ class PackedNamedTuple(object):
 
         if cls._unsupported_format_chars.intersection(format):
             raise ValueError('These format chars: {} are not supported'.format(
-                cls._unsupported_format_chars
+                tuple(cls._unsupported_format_chars)
             ))
 
         cls.unpackers = [
