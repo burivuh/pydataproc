@@ -237,6 +237,7 @@ class MemoryTest(BasePostInstanceTest):
             )
 
             self.assertLess(tested_size / common_size, 0.6)
+            self.assertMore(tested_size / common_size, 0.5)
 
 
 def timer(func):
@@ -300,6 +301,7 @@ class SerializationSpeedTest(BasePostInstanceTest):
             )
         )
         self.assertLess(tested_time / common_time, 0.65)
+        self.assertMore(tested_time / common_time, 0.55)
 
     def test_deserialization(self):
         """Compare namedtuple and packedtuple deserialization speed."""
@@ -324,6 +326,7 @@ class SerializationSpeedTest(BasePostInstanceTest):
             )
         )
         self.assertLess(tested_time / common_time, 0.8)
+        self.assertMore(tested_time / common_time, 0.7)
 
 
 class AccessSpeedTest(BasePostInstanceTest):
