@@ -5,7 +5,7 @@ import struct
 import sys
 
 
-class PackedNamedTuple(object):
+class PackedNamedTuple(str):
     """
     More memory-efficient tuple with a collections.namedtuple-like interface.
 
@@ -35,7 +35,7 @@ class PackedNamedTuple(object):
     - up to 2x times slower instance creation
     """
 
-    __slots__ = ('packed_array',)
+    __slots__ = tuple()
 
     _unsupported_format_chars = frozenset('xpP@=<>!')
 
@@ -66,62 +66,62 @@ class PackedNamedTuple(object):
         cls.whole_packer = serializer.pack
         cls.whole_unpacker = serializer.unpack
 
-    def __init__(self, *args, **kwargs):
+    def __new__(cls, *args, **kwargs):
         """Support namedtuple interface. Packs content."""
         if kwargs:
             args = [
                 kwargs[field]
-                for field in self.fields_in_order
+                for field in cls.fields_in_order
             ]
 
         try:
-            self.packed_array = self.whole_packer(*args)
+            value = cls.whole_packer(*args)
         except:
+            raise
             raise Exception(
                 'Bad values: {} for format of: {}'.format(
-                    args, type(self).__name__
+                    args, type(cls).__name__
                 )
             )
+        return super(PackedNamedTuple, cls).__new__(cls, value)
 
     def __getitem__(self, index):
         """Implement indexed access to the fields."""
-        return self.unpackers[index](self.packed_array)[0]
+        return self.unpackers[index](self)[0]
 
     def __getslice__(self, start, end):
         """Implement slice through whole unpacking."""
-        return self.whole_unpacker(self.packed_array)[start:end]
+        return self.whole_unpacker(self)[start:end]
 
     def __iter__(self):
         """Implement iteration through whole unpacking."""
-        return iter(self.whole_unpacker(self.packed_array))
+        return iter(self.whole_unpacker(self))
 
     def __getattr__(self, field):
         """Implement named access to the fields."""
         try:
-            return self.unpackers_by_name[field](self.packed_array)[0]
+            return self.unpackers_by_name[field](self)[0]
         except KeyError:
             raise AttributeError(field)
         except Exception:
             raise AttributeError(field)
 
-    def __eq__(self, other):
-        """Implement == by comparing binary strings."""
-        return self.packed_array == other.packed_array
+    @classmethod
+    def _restore(cls, value):
+        return _pickle_restore(cls, value)
 
     def __reduce__(self):
         """Pickle serialization awareness."""
         return (
             _pickle_restore,
             (
-                self.__class__, self.packed_array
+                self.__class__, str(self)
             )
         )
 
 
 def _pickle_restore(cls, value):
-    instance = cls.__new__(cls)
-    instance.packed_array = value
-    return instance
+    return super(PackedNamedTuple, cls).__new__(cls, value)
 
 
 def packedtuple(name, format, fields, register_type=None):
@@ -130,7 +130,7 @@ def packedtuple(name, format, fields, register_type=None):
 
     Creates and registers type for the pickle protocol.
     """
-    t = type(name, (PackedNamedTuple,), {'__slots__': []})
+    t = type(name, (PackedNamedTuple,), {'__slots__': tuple()})
 
     t.setup(format, fields)
 
@@ -149,9 +149,7 @@ def packedtuple(name, format, fields, register_type=None):
             return obj.packed_array
 
         def deserialize(binary_record):
-            instance = t.__new__(t)
-            instance.packed_array = binary_record
-            return instance
+            return t(binary_record)
 
         register_type(t, serialize, deserialize)
 

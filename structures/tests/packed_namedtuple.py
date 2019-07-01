@@ -9,6 +9,7 @@ from __future__ import division
 
 import cPickle as pickle
 import collections
+import marshal
 from operator import itemgetter
 import sys
 import timeit
@@ -99,6 +100,8 @@ class BaseTest(unittest.TestCase):
 class BasePostInstanceTest(BaseTest):
     """Base class for tests creating instances of namedtuples."""
 
+    marshal_protocol = 2
+
     def create_instances(self, types):
         """Create instances using **kwargs (by name)."""
         return tuple(
@@ -124,13 +127,43 @@ class BasePostInstanceTest(BaseTest):
         self.common_instances = self.create_instances(self.named_tuples)
 
 
-class PickleablenessTest(BasePostInstanceTest):
-    """Testing if pickle can use packed named tuples."""
+class CreationTest(BasePostInstanceTest):
+    """Tests for creation."""
+
+    def test_name_creation(self):
+        """Check packed tuple valid creation by name."""
+        tested = self.create_instances(self.packed_types)
+        common = self.create_instances(self.named_tuples)
+
+        for t1, t2 in zip(tested, common):
+            t1 = (self.prepare_value(e, self.float_precision) for e in t1)
+            t2 = (self.prepare_value(e, self.float_precision) for e in t2)
+            self.assertEqual(tuple(t1), tuple(t2))
+
+    def test_equal_creations(self):
+        """Check equality of named and indexed creation."""
+        by_name = self.create_instances(self.packed_types)
+        by_index = self.create_instances_by_index(self.packed_types)
+        for t1, t2 in zip(by_name, by_index):
+            self.assertEqual(t1, t2)
+
+
+class SerializeablenessTest(BasePostInstanceTest):
+    """Testing if pickle/marshal can use packed named tuples."""
 
     def test_pickleableness(self):
         """Pickle objects and check their states."""
         for tested in self.tested_instances:
             r = pickle.loads(pickle.dumps(tested))
+            self.assertEqual(r, tested)
+
+    def test_marshalableness(self):
+        """Pickle objects and check their states."""
+        for tested in self.tested_instances:
+            packed_array = marshal.loads(
+                marshal.dumps(tested, self.marshal_protocol)
+            )
+            r = tested._restore(packed_array)
             self.assertEqual(r, tested)
 
 
@@ -195,6 +228,7 @@ class MemoryTest(BasePostInstanceTest):
                                   self.common_instances):
             tested_size = sys.getsizeof(tested)
             common_size = sys.getsizeof(common)
+            common_size += sum(map(sys.getsizeof, common))
 
             self.info(
                 'Size: tested {}, common {}'.format(
@@ -202,7 +236,8 @@ class MemoryTest(BasePostInstanceTest):
                 )
             )
 
-            self.assertLess(tested_size / common_size, 0.78)
+            self.assertLess(tested_size / common_size, 0.6)
+            self.assertGreater(tested_size / common_size, 0.3)
 
 
 def timer(func):
@@ -247,59 +282,51 @@ class CreationSpeedTest(BasePostInstanceTest):
 class SerializationSpeedTest(BasePostInstanceTest):
     """Class for serialization/deserialization speeding tests."""
 
-    def _serialize_tested(self):
-        return tuple(
-            pickle.dumps(tested)
-            for tested in self.tested_instances
-        )
+    def _pickle(self, seq):
+        return map(pickle.dumps, seq)
 
-    def _serialize_common(self):
-        return tuple(
-            pickle.dumps(common)
-            for common in self.common_instances
-        )
-
-    def test_serialization(self):
+    def test_pickle_serialization(self):
         """Compare namedtuple and packedtuple serialization speed."""
         tested_time = timer(
-            self._serialize_tested
+            lambda: self._pickle(self.tested_instances)
         )
 
         common_time = timer(
-            self._serialize_common
+            lambda: self._pickle(self.common_instances)
         )
+
         self.info(
             'Serialization: tested {}, common {}'.format(
                 tested_time, common_time
             )
         )
-        self.assertLess(tested_time / common_time, 0.7)
+        self.assertLess(tested_time / common_time, 0.65)
+        self.assertGreater(tested_time / common_time, 0.55)
 
     def test_deserialization(self):
         """Compare namedtuple and packedtuple deserialization speed."""
-        def deserialize_tested():
-            for tested in self.tested_instances:
-                pt = tested.__class__.__new__(tested.__class__)
-                pt.packed_array = tested.packed_array
+        def deserialize(serialized):
+            return [
+                pickle.loads(value)
+                for value in serialized
+            ]
 
-        def deserialize_common(serialized):
-            for s_common, tpe in zip(serialized, self.named_tuples):
-                tpe(*pickle.loads(s_common))
-
+        serialized = self._pickle(self.tested_instances)
         tested_time = timer(
-            lambda: deserialize_tested()
+            lambda: deserialize(serialized)
         )
 
-        serialized = self._serialize_common()
+        serialized = self._pickle(self.common_instances)
         common_time = timer(
-            lambda: deserialize_common(serialized)
+            lambda: deserialize(serialized)
         )
         self.info(
             'Deserialization: tested {}, common {}'.format(
                 tested_time, common_time
             )
         )
-        self.assertLess(tested_time / common_time, 0.11)
+        self.assertLess(tested_time / common_time, 0.8)
+        self.assertGreater(tested_time / common_time, 0.7)
 
 
 class AccessSpeedTest(BasePostInstanceTest):
