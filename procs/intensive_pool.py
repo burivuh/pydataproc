@@ -1,4 +1,23 @@
-"""Search functions operating on the collected popularity data."""
+"""Pool with a map fuction.
+
+About 10% faster on the slow main process than standard pool map.
+
+Additional customizable task shuffle function is available that can be used
+for worker balancing or specific task preparation.
+For example, group tasks and feed map workers that groups as new tasks.
+
+Arch:
+Pool starts multiprocessor.
+Multiprocessor starts dispatchers.
+Dispatchers starts collectors/mergers and pools of workers.
+
+Pool send functions and tasks to the multiprocessor.
+Multiprocessor make batches, splits every batch by dispatchers tasks and feed them.
+Dispatchers shuffler/prepare tasks and feed workers.
+Workers invoke map fuction worker and feed collectors.
+Collectors merge results if necessary and feed them to multiprocessor.
+Multiprocessor return batch to the Pool.
+"""
 
 from __future__ import division
 
