@@ -5,7 +5,7 @@ import random
 
 from itertools import izip
 from multiprocessing import Pool as StandardPool
-from intensive_pool import Pool
+from procs.intensive_pool import Pool
 
 
 def worker_for_new_pool(item):
