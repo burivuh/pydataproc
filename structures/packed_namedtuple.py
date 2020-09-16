@@ -47,7 +47,8 @@ class PackedNamedTuple(str):
                 tuple(cls._unsupported_format_chars)
             ))
 
-        cls.size = struct.calcsize(format)
+        str_format = '={}'.format(''.join(format))
+        cls.size = struct.calcsize(str_format)
         cls.fields_in_order = fields
 
         cls.unpackers = [
@@ -63,7 +64,7 @@ class PackedNamedTuple(str):
             for f, u in zip(fields, cls.unpackers)
         }
 
-        serializer = struct.Struct('={}'.format(''.join(format)))
+        serializer = struct.Struct(str_format)
         cls.whole_packer = serializer.pack
         cls.whole_unpacker = serializer.unpack
 
