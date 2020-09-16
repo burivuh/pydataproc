@@ -97,6 +97,7 @@ def _indexed_batches(tasks, block_limit, workers):
         yield _split_by_workers(batch, workers)
 
 
+
 def empty_shuffle(iterable, pool):
     """No shuffle helper."""
     return iterable
