@@ -10,9 +10,17 @@ import marshal
 from itertools import chain, cycle
 
 from multiprocessing import (
-    Pool as StandardPool, JoinableQueue, Pipe, Process,
+    Pool as StandardPool, JoinableQueue, Queue, Pipe, Process,
     cpu_count, log_to_stderr, current_process
 )
+
+
+def _protocol_dumps(obj):
+    return marshal.dumps(obj, 2)
+
+
+def _protocol_loads(data):
+    return marshal.loads(data)
 
 
 def log_info(who, text):
@@ -70,7 +78,7 @@ def _indexed_batches(tasks, block_limit, workers):
         yield _split_by_workers(batch, workers)
 
 
-def empty_shuffle(iterable):
+def empty_shuffle(iterable, pool):
     """No shuffle helper."""
     return iterable
 
@@ -100,33 +108,39 @@ def _dispatch_worker(tasks_conn, results_conn,
 
     try:
         while True:
-            batch_tasks = marshal.loads(tasks_conn.recv_bytes())
+            batch_tasks = _protocol_loads(tasks_conn.recv_bytes())
             if batch_tasks is None:
                 break
 
-            batch_tasks = list(
-                shuffle_func(enumerate(batch_tasks))
-            )
+            batch_tasks = list(enumerate(batch_tasks))
+            task_size = len(batch_tasks)
+
+            shuffled_tasks = shuffle_func(batch_tasks, pool)
+
+            batch_size = len(shuffled_tasks)
+            assert batch_size > 0, "shuffled tasks can't be empty"
+
+            del batch_tasks
 
             full_params = (
                 (user_func, it)
-                for it in batch_tasks
+                for it in shuffled_tasks
             )
 
-            collector_out.send(len(batch_tasks))
+            collector_out.send((task_size, batch_size))
 
             [
                 pool.apply_async(_worker, (p,))
                 for p in full_params
             ]
 
-            del batch_tasks
+            del shuffled_tasks
     except Exception as ex:
         log_info('Dispatcher', 'finishing with ex: {}'.format(ex))
         collector.terminate()
         raise
     else:
-        collector_out.send(0)
+        collector_out.send((0, 0))
     finally:
         pool.close()
         pool.join()
@@ -162,15 +176,15 @@ class BaseMerger(Process):
         try:
             stats = collections.Counter()
 
-            batch_size = self._wait_for_batch_size()
-            self.pre_batch(batch_size)
+            task_size, batch_size = self._wait_for_batch_size()
+            self.pre_batch(task_size)
             task_count_down = batch_size
 
             while batch_size:
                 message = self.queue.get()
                 self.queue.task_done()
 
-                message = marshal.loads(message)
+                message = _protocol_loads(message)
 
                 is_error, data = message
                 if is_error:
@@ -182,15 +196,20 @@ class BaseMerger(Process):
                 self.merge_results(results)
 
                 task_count_down -= 1
-                if task_count_down <= 0:
-                    self.out_conn.send(stats)
-                    self.out_conn.send_bytes(marshal.dumps(self.results, 2))
 
-                    batch_size = self._wait_for_batch_size()
-                    self.pre_batch(batch_size)
+                if task_count_down <= 0:
+                    self.out_conn.send_bytes(_protocol_dumps(stats.items()))
+                    MAX_PACKET_SIZE = 5 * 10**5
+                    for i in range(0, len(self.results), MAX_PACKET_SIZE):
+                        block = self.results[i:i + MAX_PACKET_SIZE]
+                        self.out_conn.send_bytes(_protocol_dumps(block))
+                    self.out_conn.send_bytes('')
+
+                    task_size, batch_size = self._wait_for_batch_size()
+                    self.pre_batch(task_size)
                     task_count_down = batch_size
         except Exception as ex:
-            print ex
+            log_info('Merger', 'exception: {}'.format(ex))
             raise
         finally:
             self.queue.close()
@@ -219,7 +238,7 @@ class OrderMerger(BaseMerger):
 
 
 class Multiprocessor(Process):
-    """Manager process for task batching and dispatcher/mergers communication."""
+    """Manager process for task batching and mergers communication."""
 
     def __init__(self, dispatchers, workers_per_dispatcher,
                  main_connection_in, main_connection_out,
@@ -262,14 +281,20 @@ class Multiprocessor(Process):
         shuffle_func = self.main_conn_in.recv()
         tasks = self.main_conn_in.recv()
 
+        assert len(tasks) > 0, "tasks can't be empty"
+
         self._init_dispatchers(user_func, shuffle_func)
 
         # parts = self.batch_size // self.dispatchers_num
         parts = self.dispatchers_num
         if self.batch_size < parts * self.workers_per_dispatcher:
-            partitions = _indexed_batches(tasks, self.batch_size, self.dispatchers_num)
+            partitions = _indexed_batches(
+                tasks, min(self.batch_size, len(tasks)), self.dispatchers_num
+            )
         else:
-            partitions = _indexed_batches(tasks, self.batch_size, parts)
+            partitions = _indexed_batches(
+                tasks, min(self.batch_size, len(tasks)), parts
+            )
 
         dispatcher_tasks = (
             tasks
@@ -281,13 +306,17 @@ class Multiprocessor(Process):
         result_conns = cycle(enumerate(self.results_conns))
 
         def dispatch(ind, conn, sub_tasks):
-            conn.send_bytes(marshal.dumps(sub_tasks, 2))
+            conn.send_bytes(_protocol_dumps(sub_tasks))
 
         def recieve(ind, conn):
-            stats.update(conn.recv())
-            self.main_conn_out.send_bytes(conn.recv_bytes())
+            stats.update(_protocol_loads(conn.recv_bytes()))
+            packet = conn.recv_bytes()
+            while packet != '':
+                self.main_conn_out.put(packet)
+                packet = conn.recv_bytes()
 
         try:
+            log_info('Multiprocessor', 'starts dispatching')
             for i in range(self.dispatchers_num):
                 d_ind, d_conn = next(dispatch_conns)
                 sub_tasks = next(dispatcher_tasks)
@@ -295,19 +324,20 @@ class Multiprocessor(Process):
 
             for sub_tasks in dispatcher_tasks:
                 recieve(*next(result_conns))
-
                 d_ind, d_conn = next(dispatch_conns)
                 dispatch(d_ind, d_conn, sub_tasks)
 
             for i in range(self.dispatchers_num):
                 recieve(*next(result_conns))
 
+            log_info('Multiprocessor', 'Ending all')
             for dispatcher_conn in self.dispatchers_conns:
-                dispatcher_conn.send_bytes(marshal.dumps(None, 2))
+                dispatcher_conn.send_bytes(_protocol_dumps(None))
 
-            self.main_conn_out.send_bytes(marshal.dumps(None, 2))
+            self.main_conn_out.put(_protocol_dumps(None))
             self.main_conn_out.close()
-        except:
+        except Exception as ex:
+            log_info('Multiprocessor', 'exception: {}'.format(ex))
             for dispatcher in self.dispatchers:
                 dispatcher.terminate()
             raise
@@ -330,15 +360,15 @@ class Pool(object):
         """Start all necessary processes."""
         self.dispatchers_num = dispatchers_num
         if dispatcher_worker_num is None:
-            dispatcher_worker_num = cpu_count() // dispatchers_num
+            dispatcher_worker_num = int(1.5 * cpu_count() / dispatchers_num)
         self.dispatcher_worker_num = dispatcher_worker_num
         read_conn, write_to_multiproc = Pipe(duplex=False)
         read_results, write_to_me = Pipe(duplex=False)
         self.multiproc_conn = write_to_multiproc
-        self.results_conn = read_results
+        self.results_conn = Queue(maxsize=2 * dispatchers_num)
         self.multiprocessor = Multiprocessor(
             self.dispatchers_num, self.dispatcher_worker_num,
-            read_conn, write_to_me, batch_size
+            read_conn, self.results_conn, batch_size
         )
 
     def map(self, proc_func, tasks, shuffle_func=None):
@@ -349,9 +379,9 @@ class Pool(object):
         del tasks
 
         while True:
-            batch_results = self.results_conn.recv_bytes()
+            batch_results = self.results_conn.get()
 
-            batch_results = marshal.loads(batch_results)
+            batch_results = _protocol_loads(batch_results)
             if batch_results is None:
                 # got signal to stop
                 break
@@ -368,19 +398,20 @@ class Pool(object):
 
 
 def _init_worker(_queue):
+    # workaround for python2
     global queue
     queue = _queue
 
 
 def _worker(item):
+    # workaround for python2
     global queue
     proc_func, params = item
     try:
         results = proc_func(params)
         queue.put(
-            marshal.dumps(
-                (False, results),
-                2
+            _protocol_dumps(
+                (False, results)
             )
         )
     except:
@@ -388,9 +419,8 @@ def _worker(item):
         logger.exception('Worker: exception')
 
         queue.put(
-            marshal.dumps(
-                (True, traceback.format_exc()),
-                2
+            _protocol_dumps(
+                (True, traceback.format_exc())
             )
         )
 

@@ -42,12 +42,13 @@ class PackedNamedTuple(str):
     @classmethod
     def setup(cls, format, fields):
         """Prepare class for serialization."""
-        cls.fields_in_order = fields
-
         if cls._unsupported_format_chars.intersection(format):
             raise ValueError('These format chars: {} are not supported'.format(
                 tuple(cls._unsupported_format_chars)
             ))
+
+        cls.size = struct.calcsize(format)
+        cls.fields_in_order = fields
 
         cls.unpackers = [
             partial(
@@ -77,7 +78,6 @@ class PackedNamedTuple(str):
         try:
             value = cls.whole_packer(*args)
         except:
-            raise
             raise Exception(
                 'Bad values: {} for format of: {}'.format(
                     args, type(cls).__name__
